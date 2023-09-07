@@ -7,19 +7,25 @@ clippy::unnecessary_wraps
 
 use anyhow::{anyhow, Result};
 use log::*;
-use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::prelude::v1_0::*;
-use vulkanalia::window as vk_window;
-use vulkanalia::Version;
-use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{Window, WindowBuilder};
-use std::collections::HashSet;
-use std::ffi::CStr;
-use std::os::raw::c_void;
-
-use vulkanalia::vk::ExtDebugUtilsExtension;
+use vulkanalia::{
+	Version,
+	window as vk_window,
+	prelude::v1_0::*,
+	loader::{LibloadingLoader, LIBRARY},
+	vk::ExtDebugUtilsExtension
+};
+use winit::{
+	dpi::LogicalSize,
+	event::{Event, WindowEvent},
+	event_loop::{ControlFlow, EventLoop},
+	window::{Window, WindowBuilder}
+};
+use std::{
+	collections::HashSet,
+	ffi::CStr,
+	os::raw::c_void
+};
+use thiserror::Error;
 
 
 /// The Vulkan SDK version that started requiring the portability subset extension for macOS.
