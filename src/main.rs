@@ -97,6 +97,7 @@ impl App {
 		let device = create_logical_device(&entry, &instance, &mut data)?;
 		create_swapchain(window, &instance, &device, &mut data)?;
 		create_swapchain_image_views(&device, &mut data)?;
+		create_pipeline(&device, &mut data)?;
 
 		Ok(Self { entry, instance, data, device })
 	}
@@ -122,6 +123,57 @@ impl App {
 		self.instance.destroy_surface_khr(self.data.surface, None);
 		self.instance.destroy_instance(None);
 	}
+}
+
+#[cfg(not(windows))]
+macro_rules! shader_root {
+    ()=>{"../shaders/"}
+}
+
+#[cfg(windows)]
+macro_rules! shader_root {
+    ()=>{r#"..\shaders\"#}
+}
+
+unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()> {
+	let vert = include_bytes!(concat!(shader_root!(), "vert.spv"));
+	let frag = include_bytes!(concat!(shader_root!(), "frag.spv"));
+
+	let vert_shader_module = create_shader_module(device, &vert[..])?;
+	let frag_shader_module = create_shader_module(device, &frag[..])?;
+
+	let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+		.stage(vk::ShaderStageFlags::VERTEX)
+		.module(vert_shader_module)
+		.name(b"main\0");
+
+	let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+		.stage(vk::ShaderStageFlags::FRAGMENT)
+		.module(frag_shader_module)
+		.name(b"main\0");
+
+
+	device.destroy_shader_module(vert_shader_module, None);
+	device.destroy_shader_module(frag_shader_module, None);
+
+	Ok(())
+}
+
+unsafe fn create_shader_module(
+	device: &Device,
+	bytecode: &[u8],
+) -> Result<vk::ShaderModule> {
+	let bytecode = Vec::<u8>::from(bytecode);
+	let (prefix, code, suffix) = bytecode.align_to::<u32>();
+	if !prefix.is_empty() || !suffix.is_empty() {
+		return Err(anyhow!("Shader bytecode is not properly aligned."));
+	}
+
+	let info = vk::ShaderModuleCreateInfo::builder()
+		.code_size(bytecode.len())
+		.code(code);
+
+	Ok(device.create_shader_module(&info, None)?)
 }
 
 unsafe fn create_swapchain_image_views(device: &Device, data: &mut AppData) -> Result<()> {
@@ -476,7 +528,7 @@ fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::Prese
 }
 
 fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
-	if capabilities.current_extent.width != u32::max_value() {
+	if capabilities.current_extent.width != u32::MAX {
 		capabilities.current_extent
 	} else {
 		let size = window.inner_size();
