@@ -101,6 +101,9 @@ impl App {
 		create_render_pass(&instance, &device, &mut data)?;
 		create_pipeline(&device, &mut data)?;
 
+		create_pipeline(&device, &mut data)?;
+		create_framebuffers(&device, &mut data)?;
+
 		Ok(Self { entry, instance, data, device })
 	}
 
@@ -111,6 +114,10 @@ impl App {
 
 	/// Destroys our Vulkan app.
 	unsafe fn destroy(&mut self) {
+		self.data.framebuffers
+			.iter()
+			.for_each(|f| self.device.destroy_framebuffer(*f, None));
+
 		self.device.destroy_pipeline(self.data.pipeline, None);
 
 		self.device.destroy_pipeline_layout(self.data.pipeline_layout, None);
@@ -123,13 +130,34 @@ impl App {
 		self.device.destroy_swapchain_khr(self.data.swapchain, None);
 		self.device.destroy_device(None);
 
+		self.instance.destroy_surface_khr(self.data.surface, None);
+
 		if VALIDATION_ENABLED {
 			self.instance.destroy_debug_utils_messenger_ext(self.data.messenger, None);
 		}
 
-		self.instance.destroy_surface_khr(self.data.surface, None);
 		self.instance.destroy_instance(None);
 	}
+}
+
+unsafe fn create_framebuffers(device: &Device, data: &mut AppData) -> Result<()> {
+	data.framebuffers = data
+		.swapchain_image_views
+		.iter()
+		.map(|i| {
+			let attachments = &[*i];
+			let create_info = vk::FramebufferCreateInfo::builder()
+				.render_pass(data.render_pass)
+				.attachments(attachments)
+				.width(data.swapchain_extent.width)
+				.height(data.swapchain_extent.height)
+				.layers(1);
+
+			device.create_framebuffer(&create_info, None)
+		})
+		.collect::<Result<Vec<_>, _>>()?;
+
+	Ok(())
 }
 
 unsafe fn create_render_pass(instance: &Instance, device: &Device, data: &mut AppData) -> Result<()> {
@@ -432,6 +460,8 @@ struct AppData {
 	render_pass: vk::RenderPass,
 	pipeline_layout: vk::PipelineLayout,
 	pipeline: vk::Pipeline,
+
+	framebuffers: Vec<vk::Framebuffer>,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance> {
