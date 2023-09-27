@@ -15,6 +15,7 @@ use vulkanalia::{
 	vk::ExtDebugUtilsExtension,
 	vk::KhrSurfaceExtension,
 	vk::KhrSwapchainExtension,
+	vk::PhysicalDevice,
 };
 use winit::{
 	dpi::LogicalSize,
@@ -28,8 +29,6 @@ use std::{
 	os::raw::c_void,
 };
 use thiserror::Error;
-use vulkanalia::vk::{FuchsiaBufferCollectionExtension, PhysicalDevice};
-
 
 /// The required device extensions.
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
@@ -37,6 +36,7 @@ const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.na
 const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 
 /// Whether the validation layers should be enabled.
+//const VALIDATION_ENABLED: bool = false;
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 /// The name of the validation layers.
 const VALIDATION_LAYER: vk::ExtensionName = vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
@@ -58,8 +58,7 @@ fn main() -> Result<()> {
 		*control_flow = ControlFlow::Poll;
 		match event {
 			//Render a frame if our vulkan app is not being destroyed
-			Event::MainEventsCleared if !destroying =>
-				unsafe { app.render(&window) }.unwrap(),
+			Event::MainEventsCleared if !destroying => unsafe { app.render(&window) }.unwrap(),
 
 			//destroy our vulkan app
 			Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
@@ -101,21 +100,54 @@ impl App {
 		create_render_pass(&instance, &device, &mut data)?;
 		create_pipeline(&device, &mut data)?;
 
-		create_pipeline(&device, &mut data)?;
 		create_framebuffers(&device, &mut data)?;
 		create_command_pool(&instance, &device, &mut data)?;
 		create_command_buffers(&device, &mut data)?;
+		create_sync_objects(&device, &mut data)?;
 
 		Ok(Self { entry, instance, data, device })
 	}
 
 	/// Renders a frame for our Vulkan app.
 	unsafe fn render(&mut self, window: &Window) -> Result<()> {
+		let image_index = self
+			.device
+			.acquire_next_image_khr(
+				self.data.swapchain,
+				u64::MAX,
+				self.data.image_available_semaphore,
+				vk::Fence::null(),
+			)?
+			.0 as usize;
+
+		let wait_semaphores = &[self.data.image_available_semaphore];
+		let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+		let command_buffers = &[self.data.command_buffers[image_index]];
+		let signal_semaphores = &[self.data.render_finished_semaphore];
+		let submit_info = vk::SubmitInfo::builder()
+			.wait_semaphores(wait_semaphores)
+			.wait_dst_stage_mask(wait_stages)
+			.command_buffers(command_buffers)
+			.signal_semaphores(signal_semaphores);
+
+		self.device.queue_submit(self.data.graphics_queue, &[submit_info], vk::Fence::null())?;
+
+		let swapchains = &[self.data.swapchain];
+		let image_indices = &[image_index as u32];
+		let present_info = vk::PresentInfoKHR::builder()
+			.wait_semaphores(signal_semaphores)
+			.swapchains(swapchains)
+			.image_indices(image_indices);
+
+		self.device.queue_present_khr(self.data.present_queue, &present_info)?;
 		Ok(())
 	}
 
 	/// Destroys our Vulkan app.
 	unsafe fn destroy(&mut self) {
+		self.device.destroy_semaphore(self.data.render_finished_semaphore, None);
+		self.device.destroy_semaphore(self.data.image_available_semaphore, None);
+
 		self.device.destroy_command_pool(self.data.command_pool, None);
 
 		self.data.framebuffers
@@ -144,6 +176,15 @@ impl App {
 	}
 }
 
+unsafe fn create_sync_objects(device: &Device, data: &mut AppData) -> Result<()> {
+	let semaphore_info = vk::SemaphoreCreateInfo::builder();
+
+	data.image_available_semaphore = device.create_semaphore(&semaphore_info, None)?;
+	data.render_finished_semaphore = device.create_semaphore(&semaphore_info, None)?;
+
+	Ok(())
+}
+
 unsafe fn create_command_buffers(device: &Device, data: &mut AppData) -> Result<()> {
 	let allocate_info = vk::CommandBufferAllocateInfo::builder()
 		.command_pool(data.command_pool)
@@ -151,18 +192,6 @@ unsafe fn create_command_buffers(device: &Device, data: &mut AppData) -> Result<
 		.command_buffer_count(data.framebuffers.len() as u32);
 
 	data.command_buffers = device.allocate_command_buffers(&allocate_info)?;
-
-	Ok(())
-}
-
-unsafe fn create_command_pool(instance: &Instance, device: &Device, data: &mut AppData) -> Result<()> {
-	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
-
-	let info = vk::CommandPoolCreateInfo::builder()
-		.flags(vk::CommandPoolCreateFlags::empty())
-		.queue_family_index(indices.graphics);
-
-	data.command_pool = device.create_command_pool(&info, None)?;
 
 	for (i, command_buffer) in data.command_buffers.iter().enumerate() {
 		let inheritance = vk::CommandBufferInheritanceInfo::builder();
@@ -197,6 +226,18 @@ unsafe fn create_command_pool(instance: &Instance, device: &Device, data: &mut A
 
 		device.end_command_buffer(*command_buffer)?;
 	}
+
+	Ok(())
+}
+
+unsafe fn create_command_pool(instance: &Instance, device: &Device, data: &mut AppData) -> Result<()> {
+	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
+
+	let info = vk::CommandPoolCreateInfo::builder()
+		.flags(vk::CommandPoolCreateFlags::empty())
+		.queue_family_index(indices.graphics);
+
+	data.command_pool = device.create_command_pool(&info, None)?;
 
 	Ok(())
 }
@@ -241,11 +282,21 @@ unsafe fn create_render_pass(instance: &Instance, device: &Device, data: &mut Ap
 		.pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
 		.color_attachments(color_attachments);
 
+	let dependency = vk::SubpassDependency::builder()
+		.src_subpass(vk::SUBPASS_EXTERNAL)
+		.dst_subpass(0)
+		.src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+		.src_access_mask(vk::AccessFlags::empty())
+		.dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+		.dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
 	let attachments = &[color_attachment];
 	let subpasses = &[subpass];
+	let dependencies = &[dependency];
 	let info = vk::RenderPassCreateInfo::builder()
 		.attachments(attachments)
-		.subpasses(subpasses);
+		.subpasses(subpasses)
+		.dependencies(dependencies);
 
 	data.render_pass = device.create_render_pass(&info, None)?;
 
@@ -526,6 +577,9 @@ struct AppData {
 
 	command_pool: vk::CommandPool,
 	command_buffers: Vec<vk::CommandBuffer>,
+
+	image_available_semaphore: vk::Semaphore,
+	render_finished_semaphore: vk::Semaphore,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance> {
